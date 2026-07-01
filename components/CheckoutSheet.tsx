@@ -5,7 +5,7 @@ import { CreditCard, Landmark, ShieldCheck, Check, Loader2, Copy } from 'lucide-
 import { Sheet } from './Modal';
 import { useBilling } from '@/lib/store';
 import { planFor, type Interval, type Rail, type Tier } from '@/lib/plans';
-import { naira, shortDate } from '@/lib/format';
+import { naira } from '@/lib/format';
 
 export function CheckoutSheet({
   open,
@@ -19,17 +19,42 @@ export function CheckoutSheet({
   interval: Interval;
 }) {
   const router = useRouter();
-  const { subscribe } = useBilling();
+  const { subscribe, live } = useBilling();
   const [rail, setRail] = useState<Rail>('card');
   const [phase, setPhase] = useState<'form' | 'processing' | 'done'>('form');
+  const [error, setError] = useState<string | null>(null);
 
   const plan = planFor(tier);
   const price = interval === 'annual' ? plan.priceAnnual : plan.priceMonthly;
   const per = interval === 'annual' ? 'year' : 'month';
-  const firstChargeDate = shortDate(new Date(Date.now() + 7 * 86400000).toISOString());
 
-  function pay() {
+  async function pay() {
     setPhase('processing');
+    setError(null);
+    // Live: subscribe() either navigates away to Nomba checkout (pay-to-unlock), starts a
+    // no-card trial (returns, access granted), or throws.
+    if (live) {
+      try {
+        const result = await subscribe(tier, interval, rail, true);
+        if (result === 'redirect') {
+          // Browser is navigating to Nomba checkout — keep the "Redirecting…" spinner; do NOT
+          // show success (payment hasn't happened yet).
+          return;
+        }
+        // 'granted' (no-card trial / already active) → safe to show success.
+        setPhase('done');
+        setTimeout(() => {
+          onClose();
+          setPhase('form');
+          router.push('/account');
+        }, 1000);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not start checkout. Check the Plinth API key and plan lookup keys.');
+        setPhase('form');
+      }
+      return;
+    }
+    // Mock: simulate the charge locally.
     setTimeout(() => {
       subscribe(tier, interval, rail, true);
       setPhase('done');
@@ -54,7 +79,7 @@ export function CheckoutSheet({
             <Check size={28} />
           </span>
           <p className="mt-3 font-display text-lg font-bold">You&apos;re in 🎉</p>
-          <p className="mt-1 text-xs text-dim">Your 7-day free trial has started. Enjoy Nollybox {plan.name}.</p>
+          <p className="mt-1 text-xs text-dim">You&apos;re subscribed to Nollybox {plan.name}. Enjoy!</p>
         </div>
       ) : (
         <>
@@ -70,38 +95,54 @@ export function CheckoutSheet({
               </span>
             </div>
             <p className="mt-1.5 text-[11px] text-dim">
-              Free for 7 days, then {naira(price)}/{per}. First charge on{' '}
-              <span className="text-ink">{firstChargeDate}</span>. Cancel anytime.
+              <span className="text-ink">{naira(price)}</span>/{per} · billed today · cancel anytime.
             </p>
           </div>
 
-          {/* Rail toggle */}
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <RailBtn active={rail === 'card'} onClick={() => setRail('card')} icon={<CreditCard size={15} />} label="Card" />
-            <RailBtn active={rail === 'transfer'} onClick={() => setRail('transfer')} icon={<Landmark size={15} />} label="Bank transfer" />
-          </div>
-
-          {rail === 'card' ? (
-            <div className="mt-3 space-y-2.5">
-              <Field label="Card number" value="5434 6210 7425 2808" />
-              <div className="grid grid-cols-2 gap-2.5">
-                <Field label="Expiry" value="12/30" />
-                <Field label="CVV" value="•••" />
-              </div>
+          {live ? (
+            /* Live: Nomba's hosted page collects the card/transfer — we just hand off. */
+            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-line bg-surface2 p-3.5">
+              <ShieldCheck size={16} className="mt-0.5 shrink-0 text-emerald-400" />
+              <p className="text-[11px] leading-relaxed text-dim">
+                You&apos;ll enter your card (or pay by transfer) on <span className="text-ink">Nomba&apos;s secure checkout</span>.
+                Your card is tokenized so renewals happen automatically.
+              </p>
             </div>
           ) : (
-            <div className="mt-3 rounded-xl border border-line bg-surface2 p-3.5">
-              <p className="text-[11px] text-dim">Transfer to this Nomba account, then tap below.</p>
-              <div className="mt-2 flex items-center justify-between">
-                <div>
-                  <p className="font-display text-lg font-bold tracking-wide">7083 9921 04</p>
-                  <p className="text-[11px] text-dim">Wema Bank · Nollybox / Nomba</p>
-                </div>
-                <button className="tap flex items-center gap-1 rounded-lg bg-surface px-2 py-1.5 text-[11px] text-gold">
-                  <Copy size={12} /> Copy
-                </button>
+            <>
+              {/* Rail toggle (mock) */}
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <RailBtn active={rail === 'card'} onClick={() => setRail('card')} icon={<CreditCard size={15} />} label="Card" />
+                <RailBtn active={rail === 'transfer'} onClick={() => setRail('transfer')} icon={<Landmark size={15} />} label="Bank transfer" />
               </div>
-            </div>
+
+              {rail === 'card' ? (
+                <div className="mt-3 space-y-2.5">
+                  <Field label="Card number" value="5434 6210 7425 2808" />
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <Field label="Expiry" value="12/30" />
+                    <Field label="CVV" value="•••" />
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 rounded-xl border border-line bg-surface2 p-3.5">
+                  <p className="text-[11px] text-dim">Transfer to this Nomba account, then tap below.</p>
+                  <div className="mt-2 flex items-center justify-between">
+                    <div>
+                      <p className="font-display text-lg font-bold tracking-wide">7083 9921 04</p>
+                      <p className="text-[11px] text-dim">Wema Bank · Nollybox / Nomba</p>
+                    </div>
+                    <button className="tap flex items-center gap-1 rounded-lg bg-surface px-2 py-1.5 text-[11px] text-gold">
+                      <Copy size={12} /> Copy
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {error && (
+            <p className="mt-3 rounded-lg bg-rose/10 px-3 py-2 text-[11px] text-rose">{error}</p>
           )}
 
           {/* Pay */}
@@ -112,10 +153,12 @@ export function CheckoutSheet({
           >
             {phase === 'processing' ? (
               <>
-                <Loader2 size={16} className="animate-spin" /> Processing…
+                <Loader2 size={16} className="animate-spin" /> {live ? 'Redirecting…' : 'Processing…'}
               </>
+            ) : live ? (
+              'Continue to secure checkout'
             ) : rail === 'card' ? (
-              'Start free trial'
+              'Subscribe'
             ) : (
               "I've made the transfer"
             )}

@@ -118,8 +118,8 @@ export default function AccountPage() {
           </div>
         )}
 
-        {/* Quick upgrade nudge for Standard → Premium */}
-        {b.effectiveTier === 'standard' && (
+        {/* Quick upgrade nudge for Standard/Medium → Premium */}
+        {(b.effectiveTier === 'standard' || b.effectiveTier === 'medium') && (
           <Link href="/pricing" className="tap flex items-center gap-3 rounded-2xl border border-gold/30 bg-gold/[0.06] p-3.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-full bg-gold/15 text-gold">
               <Users size={17} />

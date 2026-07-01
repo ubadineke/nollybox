@@ -28,22 +28,34 @@ keeps using the local store. Nothing calls Plinth.
 
 ## Flip to live (when a tenant + plans exist)
 
-1. On the **Plinth dashboard**: register Nollybox → claim → create the plans
-   (Standard monthly, Standard annual, Premium) → generate a **live API key**.
-2. `cp .env.example .env.local` and fill:
-   ```
-   PLINTH_MODE=live
-   PLINTH_API_URL=http://localhost:7331        # or the tunnel
-   PLINTH_API_KEY=sk_live_...
-   PLINTH_PLAN_STANDARD_MONTHLY=pln_...
-   PLINTH_PLAN_STANDARD_ANNUAL=pln_...
-   PLINTH_PLAN_PREMIUM_MONTHLY=pln_...
-   ```
-3. Point the client at the server routes instead of the mock store. Three swaps in the UI:
-   - `ViewerGate` "Continue as Ada" → also `POST /api/plinth/customer`
-   - `CheckoutSheet` "pay" → `POST /api/plinth/subscribe` → redirect to the returned `checkoutLink`
-   - gating (`canWatch`) + Account → read `GET /api/plinth/entitlements` and `/account`
+The client is **already wired** for live — it's driven by `NEXT_PUBLIC_PLINTH_MODE`. Flipping is now just config:
 
-   (The store can keep mirroring this so the offline fallback still works.)
+1. On the **Plinth dashboard**: register Nollybox → claim → create the plans and give each a
+   **lookup key**: `standard_monthly`, `standard_annual`, `premium_monthly` → generate a **live API key**.
+2. `cp .env.example .env.local` and fill (no plan ids — resolved by lookup_key):
+   ```
+   PLINTH_MODE=live               # server routes call Plinth
+   NEXT_PUBLIC_PLINTH_MODE=live   # client calls the server routes instead of the mock store
+   PLINTH_API_URL=http://localhost:7331   # or the tunnel
+   PLINTH_API_KEY=sk_live_...
+   ```
+3. Restart. That's it — the wiring is built:
+   - `ViewerGate` "Continue as Ada" → `POST /api/plinth/customer` (creates the Plinth customer)
+   - `CheckoutSheet` → `POST /api/plinth/subscribe` → redirects to the Nomba checkout link
+   - Pricing/Account **upgrade/downgrade** → `POST /api/plinth/change` (proration preview → commit)
+   - gating (`canWatch`) + Account hydrate from `GET /api/plinth/account` (subscription + entitlements + invoices)
+   - the mock store remains the fallback whenever `NEXT_PUBLIC_PLINTH_MODE` ≠ `live`
 
 That's the whole integration — one app, no DB, no auth provider.
+
+### What live vs mock changes at runtime
+| | mock (default) | live |
+|---|---|---|
+| Identity | local viewer | `POST /api/plinth/customer` (cookie holds customer id) |
+| Subscribe | local 7-day trial | `subscribe` → **Nomba hosted checkout** |
+| Upgrade/downgrade | local tier switch | `change` → **prorated** charge/credit via Plinth |
+| Access/gating & Account | local store | `account` (live subscription + entitlements + invoices) |
+| Demo Controls panel | shown (simulate lifecycle) | hidden (lifecycle driven by Plinth + dashboard) |
+
+> Dunning **recovery from the app** (past_due → update card) isn't wired for live yet — in live the
+> dunning lifecycle is driven by Plinth + the dashboard. The mock mode still demonstrates it fully.

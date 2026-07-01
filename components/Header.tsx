@@ -6,7 +6,7 @@ import { Brand } from './Brand';
 export function Header() {
   const { effectiveTier, profiles, currentProfileId, hydrated } = useBilling();
   const prof = profiles.find((p) => p.id === currentProfileId) ?? profiles[0];
-  const tierLabel = effectiveTier === 'standard' ? 'Standard' : effectiveTier === 'premium' ? 'Premium' : 'Free';
+  const tierLabel = effectiveTier === 'premium' ? 'Premium' : effectiveTier === 'standard' ? 'Standard' : effectiveTier === 'medium' ? 'Medium' : 'Free';
   const isFree = effectiveTier === 'free';
 
   return (

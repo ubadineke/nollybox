@@ -6,12 +6,22 @@ import { PLANS, type Interval, type Tier } from '@/lib/plans';
 import { naira } from '@/lib/format';
 import { useBilling } from '@/lib/store';
 import { CheckoutSheet } from '@/components/CheckoutSheet';
+import { ChangePlanSheet } from '@/components/ChangePlanSheet';
 
 export default function PricingPage() {
   const router = useRouter();
-  const { effectiveTier } = useBilling();
+  const { effectiveTier, hasPaidAccess, interval: currentInterval } = useBilling();
   const [interval, setInterval] = useState<Interval>('monthly');
   const [checkout, setCheckout] = useState<Tier | null>(null);
+  const [change, setChange] = useState<Tier | null>(null);
+
+  // Already paying → any different (tier, interval) is an upgrade/downgrade (proration).
+  // Not paying yet → a fresh subscription (checkout).
+  function onSelect(tier: Tier) {
+    if (hasPaidAccess && effectiveTier === tier && currentInterval === interval) return; // current plan
+    if (hasPaidAccess) setChange(tier);
+    else setCheckout(tier);
+  }
 
   return (
     <div className="min-h-screen">
@@ -39,7 +49,12 @@ export default function PricingPage() {
           {PLANS.map((p) => {
             const price = interval === 'annual' ? p.priceAnnual : p.priceMonthly;
             const per = interval === 'annual' ? 'yr' : 'mo';
-            const isCurrent = effectiveTier === p.tier;
+            const isCurrent = hasPaidAccess ? effectiveTier === p.tier && currentInterval === interval : effectiveTier === p.tier;
+            const label = isCurrent
+              ? 'Your current plan'
+              : hasPaidAccess
+              ? (p.tier === 'premium' ? 'Upgrade' : 'Switch to this plan')
+              : 'Subscribe';
             return (
               <div
                 key={p.tier}
@@ -87,12 +102,13 @@ export default function PricingPage() {
                   </button>
                 ) : (
                   <button
-                    onClick={() => setCheckout(p.tier)}
-                    className={`tap mt-4 w-full rounded-xl py-2.5 text-sm font-bold ${
+                    onClick={() => onSelect(p.tier)}
+                    disabled={isCurrent}
+                    className={`tap mt-4 w-full rounded-xl py-2.5 text-sm font-bold disabled:opacity-60 ${
                       p.highlight ? 'bg-gold text-black shadow-glow' : 'bg-surface2 text-ink ring-1 ring-line'
                     }`}
                   >
-                    {isCurrent ? 'Manage plan' : 'Start 7-day free trial'}
+                    {label}
                   </button>
                 )}
               </div>
@@ -102,7 +118,7 @@ export default function PricingPage() {
 
         <p className="mt-5 text-center text-[11px] leading-relaxed text-dim">
           Billing handled by <span className="font-semibold text-gold">Plinth</span> on Nomba. Pay by card or bank
-          transfer. You won&apos;t be charged until your free trial ends.
+          transfer. Billed today · cancel anytime.
         </p>
         <div className="h-6" />
       </div>
@@ -111,6 +127,12 @@ export default function PricingPage() {
         open={checkout !== null}
         onClose={() => setCheckout(null)}
         tier={checkout ?? 'standard'}
+        interval={interval}
+      />
+      <ChangePlanSheet
+        open={change !== null}
+        onClose={() => setChange(null)}
+        tier={change ?? 'premium'}
         interval={interval}
       />
     </div>

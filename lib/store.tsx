@@ -45,6 +45,9 @@ const DEFAULT_STATE: BillingState = {
 };
 
 const KEY = 'nollybox.billing.v1';
+// Live vs mock is chosen at build time. Client-readable mirror of the server's PLINTH_MODE.
+const LIVE = process.env.NEXT_PUBLIC_PLINTH_MODE === 'live';
+
 function addDays(d: number): string {
   return new Date(Date.now() + d * 86400000).toISOString();
 }
@@ -52,8 +55,42 @@ function periodDays(interval: Interval): number {
   return interval === 'annual' ? 365 : 30;
 }
 
+// Map a raw Plinth subscription state to Nollybox's SubStatus (preserves access semantics).
+function mapPlinthState(s?: string | null): SubStatus {
+  switch (s) {
+    case 'active': return 'active';
+    case 'trialing': return 'trialing';
+    case 'past_due':
+    case 'grace': return 'past_due';   // still has access while dunning
+    case 'delinquent': return 'on_hold'; // access revoked after grace
+    // Card-required trial not yet paid, or an abandoned signup → treat as "not subscribed"
+    // (no access, no scary banner) rather than "on hold".
+    case 'incomplete': return 'none';
+    case 'canceled': return 'canceled';
+    default: return 'none';
+  }
+}
+
+async function postJSON(path: string, body?: unknown) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error ?? `POST ${path} failed (${res.status})`);
+  return data;
+}
+
+export interface ChangePreview {
+  direction: string;
+  dueNowMinor: string;
+  creditMinor: string;
+}
+
 interface BillingCtx extends BillingState {
   hydrated: boolean;
+  live: boolean;
   effectiveTier: Tier;
   entitlements: Entitlements;
   hasPaidAccess: boolean;
@@ -61,9 +98,13 @@ interface BillingCtx extends BillingState {
   canWatch: (t: Title) => boolean;
   banner: { kind: 'trial' | 'past_due' | 'on_hold'; text: string } | null;
   // actions
-  signIn: (name: string) => void;
+  signIn: (name: string) => Promise<void>;
   signOut: () => void;
-  subscribe: (tier: Tier, interval: Interval, rail: Rail, withTrial?: boolean) => void;
+  // 'redirect' = navigating to Nomba checkout (keep the spinner up); 'granted' = access given, no checkout.
+  subscribe: (tier: Tier, interval: Interval, rail: Rail, withTrial?: boolean) => Promise<'redirect' | 'granted'>;
+  previewChange: (tier: Tier, interval: Interval) => Promise<ChangePreview | null>;
+  // 'redirect' = navigating to Nomba checkout (no card → pay for the upgrade); 'done' = applied in place.
+  changePlan: (tier: Tier, interval: Interval) => Promise<'redirect' | 'done'>;
   convertTrial: () => void;
   changeTier: (tier: Tier) => void;
   simulateRenewal: () => void;
@@ -95,6 +136,29 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
     if (hydrated) localStorage.setItem(KEY, JSON.stringify(s));
   }, [s, hydrated]);
 
+  // Live: pull authoritative billing state (subscription, access) from Plinth.
+  async function hydrateLive() {
+    try {
+      const res = await fetch('/api/plinth/account');
+      const d = await res.json();
+      if (!d?.connected) return;
+      const sub = d.subscription;
+      setS((p) => ({
+        ...p,
+        tier: sub?.tier ?? 'free',
+        interval: sub?.interval ?? p.interval,
+        status: mapPlinthState(sub?.state),
+        nextBillAt: sub?.next_bill_at ?? null,
+        trialEndsAt: sub?.trial_end_at ?? null,
+      }));
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (hydrated && LIVE && s.viewer) hydrateLive();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, s.viewer?.name]);
+
   const hasPaidAccess = s.status === 'trialing' || s.status === 'active' || s.status === 'past_due';
   const effectiveTier: Tier = hasPaidAccess ? s.tier : 'free';
   const entitlements = ENTITLEMENTS[effectiveTier];
@@ -114,6 +178,7 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
   const value: BillingCtx = {
     ...s,
     hydrated,
+    live: LIVE,
     effectiveTier,
     entitlements,
     hasPaidAccess,
@@ -121,18 +186,35 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
     banner,
     canWatch: (t) => !t.premium || entitlements.premiumCatalog,
 
-    // In live mode the server route would create/find the Plinth customer here and
-    // return the customerId; in mock mode we just record the viewer locally.
-    signIn: (name) =>
+    // Live: create/find the Plinth customer (sets a cookie), then hydrate.
+    // Mock: just record the viewer locally.
+    signIn: async (name) => {
+      if (LIVE) await postJSON('/api/plinth/customer');
       setS((p) => ({
         ...p,
         viewer: { name, customerId: null },
         profiles: [{ id: 'p1', name, color: '#f4456b' }],
         currentProfileId: 'p1',
-      })),
+      }));
+      if (LIVE) await hydrateLive();
+    },
     signOut: () => setS(() => ({ ...DEFAULT_STATE })),
 
-    subscribe: (tier, interval, rail, withTrial = true) =>
+    // Live: create the subscription and redirect to the Nomba checkout link.
+    // Mock: start a local 7-day trial.
+    subscribe: async (tier, interval, rail, withTrial = true) => {
+      if (LIVE) {
+        const d = await postJSON('/api/plinth/subscribe', { tier, interval, rail });
+        if (d?.error) throw new Error(d.error);
+        if (d?.checkoutLink) {
+          // Pay-to-unlock → go to Nomba checkout. Caller keeps the spinner until we navigate.
+          window.location.href = d.checkoutLink;
+          return 'redirect';
+        }
+        // No-card trial / active → access already granted; just refresh state.
+        await hydrateLive();
+        return 'granted';
+      }
       setS((p) => ({
         ...p,
         tier,
@@ -143,7 +225,41 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
         trialEndsAt: withTrial ? addDays(7) : null,
         nextBillAt: withTrial ? addDays(7) : addDays(periodDays(interval)),
         profiles: p.profiles.slice(0, planFor(tier).screens),
-      })),
+      }));
+      return 'granted';
+    },
+
+    // Upgrade/downgrade an existing subscription. Live → Plinth proration; mock → local switch.
+    previewChange: async (tier, interval) => {
+      if (LIVE) {
+        const d = await postJSON('/api/plinth/change', { tier, interval, commit: false });
+        return d?.preview ?? null;
+      }
+      return null;
+    },
+    changePlan: async (tier, interval) => {
+      if (LIVE) {
+        const d = await postJSON('/api/plinth/change', { tier, interval, commit: true });
+        if (d?.checkoutLink) {
+          // No card on file → pay for the upgrade on Nomba; the plan swaps when payment settles.
+          // Stash the target so checkout/complete waits for THIS change to land (an upgrade keeps
+          // state='active' throughout, so "state is active" alone can't tell that the swap happened).
+          try { localStorage.setItem('plinth_pending_change', JSON.stringify({ tier, interval })); } catch {}
+          window.location.href = d.checkoutLink;
+          return 'redirect';
+        }
+        await hydrateLive();
+        return 'done';
+      }
+      setS((p) => ({
+        ...p,
+        tier,
+        interval,
+        status: p.status === 'none' || p.status === 'canceled' ? 'active' : p.status,
+        nextBillAt: p.nextBillAt ?? addDays(periodDays(interval)),
+      }));
+      return 'done';
+    },
 
     convertTrial: () =>
       setS((p) => (p.status === 'trialing' ? { ...p, status: 'active', trialEndsAt: null, nextBillAt: addDays(periodDays(p.interval)) } : p)),

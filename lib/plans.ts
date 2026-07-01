@@ -1,4 +1,4 @@
-export type Tier = 'free' | 'standard' | 'premium';
+export type Tier = 'free' | 'medium' | 'standard' | 'premium';
 export type Interval = 'monthly' | 'annual';
 export type Rail = 'card' | 'transfer';
 
@@ -12,9 +12,10 @@ export interface Entitlements {
 }
 
 export const ENTITLEMENTS: Record<Tier, Entitlements> = {
-  free: { premiumCatalog: false, hd: false, downloads: false, screens: 1, adFree: false, quality: 'SD' },
-  standard: { premiumCatalog: true, hd: true, downloads: false, screens: 1, adFree: true, quality: 'HD' },
-  premium: { premiumCatalog: true, hd: true, downloads: true, screens: 4, adFree: true, quality: '4K' },
+  free:     { premiumCatalog: false, hd: false, downloads: false, screens: 1, adFree: false, quality: 'SD' },
+  medium:   { premiumCatalog: false, hd: false, downloads: false, screens: 1, adFree: true,  quality: 'SD' },
+  standard: { premiumCatalog: true,  hd: true,  downloads: false, screens: 1, adFree: true,  quality: 'HD' },
+  premium:  { premiumCatalog: true,  hd: true,  downloads: true,  screens: 4, adFree: true,  quality: '4K' },
 };
 
 export interface PlanDef {
@@ -22,7 +23,8 @@ export interface PlanDef {
   name: string;
   tagline: string;
   priceMonthly: number; // kobo
-  priceAnnual: number; // kobo
+  priceAnnual: number; // kobo (only meaningful when annualAvailable)
+  annualAvailable: boolean; // whether an annual plan exists for this tier
   screens: number;
   quality: string;
   perks: string[];
@@ -37,19 +39,32 @@ export const PLANS: PlanDef[] = [
     tagline: 'Ad-supported taster',
     priceMonthly: 0,
     priceAnnual: 0,
+    annualAvailable: false,
     screens: 1,
     quality: 'SD',
     perks: ['Limited catalogue', 'With ads', 'SD quality', '1 screen'],
+  },
+  {
+    tier: 'medium',
+    name: 'Medium',
+    tagline: 'Ad-free, no commitment',
+    priceMonthly: 30000,
+    priceAnnual: 30000,
+    annualAvailable: false,
+    screens: 1,
+    quality: 'SD',
+    perks: ['Limited catalogue', 'No ads', 'SD quality', '1 screen', 'Cancel anytime'],
   },
   {
     tier: 'standard',
     name: 'Standard',
     tagline: 'The full library, ad-free',
     priceMonthly: 290000,
-    priceAnnual: 2900000,
+    priceAnnual: 2990000,
+    annualAvailable: true,
     screens: 1,
     quality: 'HD',
-    perks: ['Full catalogue', 'No ads', 'HD quality', '1 screen', '7-day free trial'],
+    perks: ['Full catalogue', 'No ads', 'HD quality', '1 screen', 'Cancel anytime'],
     highlight: true,
   },
   {
@@ -57,7 +72,8 @@ export const PLANS: PlanDef[] = [
     name: 'Premium',
     tagline: 'For the whole family',
     priceMonthly: 440000,
-    priceAnnual: 4400000,
+    priceAnnual: 440000, // monthly-only tier; no annual plan
+    annualAvailable: false,
     screens: 4,
     quality: '4K',
     perks: ['Everything in Standard', '4 screens', '4K + downloads', 'Pay by card or transfer'],

@@ -8,6 +8,9 @@ export function DemoControls() {
   const [open, setOpen] = useState(false);
   const b = useBilling();
 
+  // In live mode the lifecycle is driven by Plinth + the dashboard, not local simulation.
+  if (b.live) return null;
+
   const Action = ({ label, onClick, danger }: { label: string; onClick: () => void; danger?: boolean }) => (
     <button
       onClick={onClick}
