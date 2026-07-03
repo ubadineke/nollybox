@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { CreditCard, Landmark, ShieldCheck, Check, Loader2, Copy } from 'lucide-react';
+import { CreditCard, Landmark, ShieldCheck, Check, Loader2 } from 'lucide-react';
 import { Sheet } from './Modal';
 import { useBilling } from '@/lib/store';
 import { planFor, type Interval, type Rail, type Tier } from '@/lib/plans';
@@ -100,14 +100,28 @@ export function CheckoutSheet({
           </div>
 
           {live ? (
-            /* Live: Nomba's hosted page collects the card/transfer — we just hand off. */
-            <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-line bg-surface2 p-3.5">
-              <ShieldCheck size={16} className="mt-0.5 shrink-0 text-emerald-400" />
-              <p className="text-[11px] leading-relaxed text-dim">
-                You&apos;ll enter your card (or pay by transfer) on <span className="text-ink">Nomba&apos;s secure checkout</span>.
-                Your card is tokenized so renewals happen automatically.
-              </p>
-            </div>
+            /* Live: pick a rail. Card → Nomba hosted checkout. Transfer → dedicated virtual account. */
+            <>
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <RailBtn active={rail === 'card'} onClick={() => setRail('card')} icon={<CreditCard size={15} />} label="Card" />
+                <RailBtn active={rail === 'transfer'} onClick={() => setRail('transfer')} icon={<Landmark size={15} />} label="Bank transfer" />
+              </div>
+              {rail === 'card' ? (
+                <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-line bg-surface2 p-3.5">
+                  <ShieldCheck size={16} className="mt-0.5 shrink-0 text-emerald-400" />
+                  <p className="text-[11px] leading-relaxed text-dim">
+                    You&apos;ll enter your card on <span className="text-ink">Nomba&apos;s secure checkout</span>. It&apos;s tokenized so renewals happen automatically.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-line bg-surface2 p-3.5">
+                  <Landmark size={16} className="mt-0.5 shrink-0 text-gold" />
+                  <p className="text-[11px] leading-relaxed text-dim">
+                    You&apos;ll get a <span className="text-ink">dedicated account number</span> to transfer to on the next screen — yours to keep, reused for every renewal.
+                  </p>
+                </div>
+              )}
+            </>
           ) : (
             <>
               {/* Rail toggle (mock) */}
@@ -126,16 +140,10 @@ export function CheckoutSheet({
                 </div>
               ) : (
                 <div className="mt-3 rounded-xl border border-line bg-surface2 p-3.5">
-                  <p className="text-[11px] text-dim">Transfer to this Nomba account, then tap below.</p>
-                  <div className="mt-2 flex items-center justify-between">
-                    <div>
-                      <p className="font-display text-lg font-bold tracking-wide">7083 9921 04</p>
-                      <p className="text-[11px] text-dim">Wema Bank · Nollybox / Nomba</p>
-                    </div>
-                    <button className="tap flex items-center gap-1 rounded-lg bg-surface px-2 py-1.5 text-[11px] text-gold">
-                      <Copy size={12} /> Copy
-                    </button>
-                  </div>
+                  <p className="flex items-start gap-1.5 text-[11px] text-dim">
+                    <Landmark size={13} className="mt-px shrink-0 text-gold" />
+                    You&apos;ll get a <span className="text-ink">dedicated account number</span> to transfer to on the next screen. It&apos;s yours to keep — future renewals use the same one.
+                  </p>
                 </div>
               )}
             </>
@@ -156,7 +164,7 @@ export function CheckoutSheet({
                 <Loader2 size={16} className="animate-spin" /> {live ? 'Redirecting…' : 'Processing…'}
               </>
             ) : live ? (
-              'Continue to secure checkout'
+              rail === 'transfer' ? 'Get account to pay into' : 'Continue to secure checkout'
             ) : rail === 'card' ? (
               'Subscribe'
             ) : (

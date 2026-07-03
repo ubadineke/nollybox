@@ -13,6 +13,9 @@ import { Brand } from '@/components/Brand';
 export default function AccountPage() {
   const b = useBilling();
   const [recovering, setRecovering] = useState(false);
+  const [keeping, setKeeping] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const plan = planFor(b.tier);
   const price = b.interval === 'annual' ? plan.priceAnnual : plan.priceMonthly;
   const per = b.interval === 'annual' ? 'year' : 'month';
@@ -20,12 +23,36 @@ export default function AccountPage() {
   const isPaid = b.status === 'trialing' || b.status === 'active' || b.status === 'past_due' || b.status === 'on_hold';
   const needsAttention = b.status === 'past_due' || b.status === 'on_hold';
 
-  function updatePayment() {
+  // Canceling at period end: still has access until endsAt, then drops to Free. Shown instead of the
+  // renew line / scheduled-change banner (a canceling sub won't renew, so a pending downgrade is moot).
+  const cancelingAtPeriodEnd = b.cancelAtPeriodEnd && isPaid;
+  // A scheduled downgrade: the current (higher) plan stays until effectiveAt, then switches.
+  const sched = b.scheduledChange;
+  const schedPlan = sched?.tier && !cancelingAtPeriodEnd ? planFor(sched.tier) : null;
+
+  async function updatePayment() {
     setRecovering(true);
-    setTimeout(() => {
-      b.recover();
+    try {
+      const outcome = await b.updatePayment();
+      if (outcome === 'redirect') return; // navigating to Nomba checkout — keep the spinner
+    } finally {
       setRecovering(false);
-    }, 1200);
+    }
+  }
+
+  async function keepCurrent() {
+    setKeeping(true);
+    try { await b.cancelScheduledChange(); } finally { setKeeping(false); }
+  }
+
+  async function cancelSub() {
+    setCanceling(true);
+    try { await b.cancel(); } finally { setCanceling(false); }
+  }
+
+  async function resumeSub() {
+    setResuming(true);
+    try { await b.reactivate(); } finally { setResuming(false); }
   }
 
   return (
@@ -55,10 +82,17 @@ export default function AccountPage() {
               {b.nextBillAt ? shortDate(b.nextBillAt) : ''}.
             </p>
           )}
-          {b.status === 'active' && b.nextBillAt && (
+          {b.status === 'active' && b.nextBillAt && !cancelingAtPeriodEnd && (
             <p className="mt-2 text-xs text-dim">
               Renews <span className="text-ink">{shortDate(b.nextBillAt)}</span> · {naira(price)}/{per} ·{' '}
               <span className="capitalize">{b.rail === 'card' ? 'Card' : 'Bank transfer'}</span>
+            </p>
+          )}
+          {/* Transfer-funded (no card on file): renewal needs a manual payment each cycle. */}
+          {b.status === 'active' && !b.hasCard && b.effectiveTier !== 'free' && !cancelingAtPeriodEnd && (
+            <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-dim">
+              <Landmark size={12} className="mt-px shrink-0" />
+              No card on file — you’ll pay by transfer each renewal. Add a card at your next payment for automatic renewal.
             </p>
           )}
           {needsAttention && (
@@ -68,6 +102,48 @@ export default function AccountPage() {
                 ? 'We couldn’t charge your card. We’re retrying — update payment to avoid losing access.'
                 : 'Your plan is on hold. Premium titles are locked until payment is restored.'}
             </p>
+          )}
+
+          {/* Scheduled change (e.g. a downgrade): keep the current plan until it switches at renewal */}
+          {schedPlan && (
+            <div className="mt-3 rounded-xl border border-gold/25 bg-gold/[0.06] p-3">
+              <p className="flex items-start gap-1.5 text-xs text-ink">
+                <Clock size={14} className="mt-px shrink-0 text-gold" />
+                <span>
+                  Switching to <span className="font-semibold">Nollybox {schedPlan.name}</span>
+                  {sched?.effectiveAt ? <> on <span className="font-semibold">{shortDate(sched.effectiveAt)}</span></> : ' at your next renewal'}.
+                  You keep {plan.name} until then.
+                </span>
+              </p>
+              <button
+                onClick={keepCurrent}
+                disabled={keeping}
+                className="tap mt-2.5 flex w-full items-center justify-center gap-2 rounded-lg bg-surface2 py-2 text-xs font-bold text-ink ring-1 ring-line disabled:opacity-70"
+              >
+                {keeping ? <><RefreshCw size={13} className="animate-spin" /> Keeping…</> : <><XCircle size={13} /> Keep {plan.name} instead</>}
+              </button>
+            </div>
+          )}
+
+          {/* Canceling at period end: keep access until endsAt, then drop to Free — offer to resume */}
+          {cancelingAtPeriodEnd && (
+            <div className="mt-3 rounded-xl border border-rose/25 bg-rose/[0.06] p-3">
+              <p className="flex items-start gap-1.5 text-xs text-ink">
+                <AlertTriangle size={14} className="mt-px shrink-0 text-rose" />
+                <span>
+                  Canceled — you keep <span className="font-semibold">{plan.name}</span>
+                  {b.endsAt ? <> until <span className="font-semibold">{shortDate(b.endsAt)}</span></> : ' until your period ends'},
+                  then it switches to Nollybox Free. Won’t renew.
+                </span>
+              </p>
+              <button
+                onClick={resumeSub}
+                disabled={resuming}
+                className="tap mt-2.5 flex w-full items-center justify-center gap-2 rounded-lg bg-gold py-2 text-xs font-bold text-black shadow-glow disabled:opacity-70"
+              >
+                {resuming ? <><RefreshCw size={13} className="animate-spin" /> Resuming…</> : <><RefreshCw size={13} /> Resume subscription</>}
+              </button>
+            </div>
           )}
 
           {/* primary CTA */}
@@ -150,10 +226,14 @@ export default function AccountPage() {
           </div>
         </div>
 
-        {/* Cancel / resubscribe */}
-        {isPaid && (
-          <button onClick={b.cancel} className="tap w-full py-2 text-center text-xs font-medium text-dim hover:text-rose">
-            Cancel subscription
+        {/* Cancel / resubscribe. Hidden while already canceling (the hero banner offers Resume). */}
+        {isPaid && !cancelingAtPeriodEnd && (
+          <button
+            onClick={cancelSub}
+            disabled={canceling}
+            className="tap w-full py-2 text-center text-xs font-medium text-dim hover:text-rose disabled:opacity-60"
+          >
+            {canceling ? 'Canceling…' : 'Cancel subscription'}
           </button>
         )}
         {b.status === 'canceled' && (

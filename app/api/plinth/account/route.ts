@@ -21,6 +21,20 @@ export async function GET() {
   if (sub) {
     const key = plans.find((p) => p.id === sub.plan_id)?.lookup_key ?? null;
     const mapped = tierFromLookupKey(key);
+
+    // Map a pending period-end change (scheduled downgrade) to Nollybox's tier/interval + effective date.
+    let scheduledChange = null;
+    if (sub.scheduled_change) {
+      const scKey = plans.find((p) => p.id === sub.scheduled_change!.new_plan_id)?.lookup_key ?? null;
+      const scMapped = tierFromLookupKey(scKey);
+      scheduledChange = {
+        id: sub.scheduled_change.id,
+        tier: scMapped?.tier ?? null,
+        interval: scMapped?.interval ?? null,
+        effectiveAt: sub.scheduled_change.scheduled_for,
+      };
+    }
+
     subscription = {
       id: sub.id,
       tier: mapped?.tier ?? 'standard',
@@ -28,6 +42,11 @@ export async function GET() {
       state: sub.state, // raw Plinth state; the client maps it to its SubStatus
       next_bill_at: sub.next_bill_at,
       trial_end_at: sub.trial_end_at,
+      cancel_at_period_end: sub.cancel_at_period_end,
+      // When set to cancel at period end, access ends on this date (the current period end).
+      ends_at: sub.cancel_at_period_end ? sub.current_period_end : null,
+      has_card: sub.has_card,
+      scheduled_change: scheduledChange,
     };
   }
 

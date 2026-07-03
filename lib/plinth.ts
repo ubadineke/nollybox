@@ -53,6 +53,10 @@ interface PlinthSubscription {
   current_period_end: string;
   next_bill_at: string;
   trial_end_at: string | null;
+  cancel_at_period_end: boolean;
+  canceled_at: string | null;
+  has_card: boolean;
+  scheduled_change: { id: string; new_plan_id: string; new_quantity: number; scheduled_for: string | null } | null;
 }
 
 // A customer's "current" subscription is any non-canceled one (there's at most one live at a time here).
@@ -120,16 +124,20 @@ export const plinth = {
     subscriptionId: string;
     state: string;
     checkoutLink: string | null;
+    payByTransfer?: boolean;
   }> {
+    const isTransfer = input.rail === 'transfer';
+    // For a pending (incomplete) sub: card → Nomba checkout link; transfer → pay to the dedicated VA.
+    const pending = async (id: string, state: string) => {
+      if (isTransfer) return { subscriptionId: id, state, checkoutLink: null, payByTransfer: true };
+      const link: any = await req(`/v1/subscriptions/${id}/checkout-link`, { method: 'POST', body: '{}' });
+      return { subscriptionId: id, state, checkoutLink: link.checkoutLink };
+    };
+
     // Never create duplicates: reuse the viewer's existing (non-canceled) subscription.
-    // - incomplete → resume its checkout (they haven't paid yet)
-    // - active/trialing/past_due → already subscribed, nothing to do
     const existing = await this.activeSubscriptionFor(input.customerId);
     if (existing) {
-      if (existing.state === 'incomplete') {
-        const link: any = await req(`/v1/subscriptions/${existing.id}/checkout-link`, { method: 'POST', body: '{}' });
-        return { subscriptionId: existing.id, state: existing.state, checkoutLink: link.checkoutLink };
-      }
+      if (existing.state === 'incomplete') return pending(existing.id, existing.state);
       return { subscriptionId: existing.id, state: existing.state, checkoutLink: null };
     }
 
@@ -139,14 +147,20 @@ export const plinth = {
       body: JSON.stringify({
         customer_id: input.customerId,
         plan_id: planId,
-        preferred_rail: input.rail === 'transfer' ? 'transfer' : 'card',
+        preferred_rail: isTransfer ? 'transfer' : 'card',
       }),
     });
-    if (sub.state === 'incomplete') {
-      const link: any = await req(`/v1/subscriptions/${sub.id}/checkout-link`, { method: 'POST', body: '{}' });
-      return { subscriptionId: sub.id, state: sub.state, checkoutLink: link.checkoutLink };
-    }
+    if (sub.state === 'incomplete') return pending(sub.id, sub.state);
     return { subscriptionId: sub.id, state: sub.state, checkoutLink: null };
+  },
+
+  /** Dedicated virtual account + amount due for the transfer rail (lazily provisions the VA). */
+  async transferDetails(subscriptionId: string) {
+    return req<{
+      amount_due_minor: string;
+      invoice_id: string | null;
+      virtual_account: { bank_name: string; account_number: string; account_name: string };
+    }>(`/v1/subscriptions/${subscriptionId}/transfer-details`);
   },
 
   /** Real-time access for a customer — drives UI gating. */
@@ -193,6 +207,34 @@ export const plinth = {
       `/v1/subscriptions/${subscriptionId}/change-checkout`,
       { method: 'POST', body: JSON.stringify({ plan_id: planId }) },
     );
+  },
+
+  /** Cancel a pending period-end change (e.g. keep the current plan instead of a scheduled downgrade). */
+  async cancelScheduledChange(subscriptionId: string, changeId: string) {
+    return req<any>(`/v1/subscriptions/${subscriptionId}/scheduled-change/${changeId}`, { method: 'DELETE' });
+  },
+
+  /** Cancel the subscription (engine honors the tenant's cancel_policy — end_of_period keeps access until then). */
+  async cancelSubscription(subscriptionId: string) {
+    return req<{ state: string; cancel_at_period_end: boolean; effectiveAt: string }>(
+      `/v1/subscriptions/${subscriptionId}/cancel`, { method: 'POST', body: '{}' },
+    );
+  },
+
+  /** Undo a still-pending end_of_period cancel (keep the subscription). */
+  async reactivateSubscription(subscriptionId: string) {
+    return req<{ state: string; cancel_at_period_end: boolean }>(
+      `/v1/subscriptions/${subscriptionId}/reactivate`, { method: 'POST', body: '{}' },
+    );
+  },
+
+  /** "Update payment": a Nomba checkout to settle the outstanding invoice. Pay by card (tokenizes →
+   *  future renewals auto-charge) or transfer (settles this cycle only). The webhook recovers the sub. */
+  async recoverCheckout(subscriptionId: string) {
+    const link = await req<{ checkoutLink: string }>(
+      `/v1/subscriptions/${subscriptionId}/checkout-link`, { method: 'POST', body: '{}' },
+    );
+    return { checkoutLink: link.checkoutLink };
   },
 
   listInvoices() {

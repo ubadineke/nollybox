@@ -23,9 +23,11 @@ export default function CheckoutCompletePage() {
     // can't tell that the swap actually landed. store.changePlan stashes the intended target before
     // redirecting; when present, we wait until the account reflects that tier/interval before leaving.
     let target: { tier: string; interval: string } | null = null;
+    let recovering = false;
     try {
       const raw = localStorage.getItem('plinth_pending_change');
       if (raw) target = JSON.parse(raw);
+      recovering = localStorage.getItem('plinth_pending_recovery') === '1';
     } catch {}
 
     // TEMPORARY: trigger reconciliation so bank-transfer payments activate without a webhook.
@@ -40,7 +42,7 @@ export default function CheckoutCompletePage() {
     }
 
     function finish() {
-      try { localStorage.removeItem('plinth_pending_change'); } catch {}
+      try { localStorage.removeItem('plinth_pending_change'); localStorage.removeItem('plinth_pending_recovery'); } catch {}
       if (!alive) return;
       setPhase('done');
       // Hard navigation so BillingProvider remounts and re-runs hydrateLive() with the settled
@@ -54,17 +56,20 @@ export default function CheckoutCompletePage() {
         const d = await res.json();
         const sub = d?.subscription;
         const activeNow = sub?.state === 'active' || sub?.state === 'trialing' || sub?.state === 'past_due';
-        // Change flow: wait for the target plan to be reflected. Subscribe flow: wait for access.
+        // Change: wait for the target plan. Recovery: wait for a full 'active' (dunning states still
+        // report access, so we can't use activeNow). Subscribe: wait for access.
         const done = target
           ? activeNow && sub?.tier === target.tier && sub?.interval === target.interval
-          : activeNow;
+          : recovering
+            ? sub?.state === 'active'
+            : activeNow;
         if (done) { finish(); return; }
       } catch {
         // transient — keep polling
       }
       if (!alive) return;
       if (Date.now() > deadline) {
-        try { localStorage.removeItem('plinth_pending_change'); } catch {}
+        try { localStorage.removeItem('plinth_pending_change'); localStorage.removeItem('plinth_pending_recovery'); } catch {}
         setPhase('timeout');
         return;
       }

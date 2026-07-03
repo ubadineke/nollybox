@@ -1,11 +1,11 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowUpRight, Loader2, Check } from 'lucide-react';
+import { ArrowUpRight, Loader2, Check, Clock } from 'lucide-react';
 import { Sheet } from './Modal';
 import { useBilling, type ChangePreview } from '@/lib/store';
 import { planFor, type Interval, type Tier } from '@/lib/plans';
-import { naira } from '@/lib/format';
+import { naira, shortDate } from '@/lib/format';
 
 // Upgrade/downgrade an existing subscription — shows the proration preview, then commits.
 export function ChangePlanSheet({
@@ -73,12 +73,26 @@ export function ChangePlanSheet({
   return (
     <Sheet open={open} onClose={onClose} title={phase === 'done' ? '' : `Switch to ${plan.name}`}>
       {phase === 'done' ? (
-        <div className="flex flex-col items-center py-6 text-center">
-          <span className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
-            <Check size={28} />
-          </span>
-          <p className="mt-3 font-display text-lg font-bold">You&apos;re on {plan.name}</p>
-        </div>
+        preview?.scheduledFor ? (
+          // Deferred change (e.g. a downgrade): current plan stays until the switch date.
+          <div className="flex flex-col items-center py-6 text-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-gold/15 text-gold">
+              <Clock size={26} />
+            </span>
+            <p className="mt-3 font-display text-lg font-bold">{plan.name} scheduled</p>
+            <p className="mt-1 max-w-xs text-xs text-dim">
+              Switches on <span className="text-ink font-semibold">{shortDate(preview.scheduledFor)}</span>. You keep your
+              current plan until then — you can undo this from Account.
+            </p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center py-6 text-center">
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+              <Check size={28} />
+            </span>
+            <p className="mt-3 font-display text-lg font-bold">You&apos;re on {plan.name}</p>
+          </div>
+        )
       ) : (
         <>
           <div className="rounded-xl bg-surface2 p-3.5">

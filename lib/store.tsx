@@ -25,6 +25,13 @@ interface BillingState {
   startedAt: string | null;
   nextBillAt: string | null;
   trialEndsAt: string | null;
+  // A pending period-end change (e.g. a scheduled downgrade): current plan stays until effectiveAt, then switches.
+  scheduledChange: { id: string; tier: Tier | null; interval: Interval | null; effectiveAt: string | null } | null;
+  // Set when the subscription is canceling at period end: access stays until endsAt, then ends.
+  cancelAtPeriodEnd: boolean;
+  endsAt: string | null;
+  // Whether a card token is on file. Transfer-funded subs have none → renewals need manual payment.
+  hasCard: boolean;
   profiles: Profile[];
   currentProfileId: string | null;
 }
@@ -40,6 +47,10 @@ const DEFAULT_STATE: BillingState = {
   startedAt: null,
   nextBillAt: null,
   trialEndsAt: null,
+  scheduledChange: null,
+  cancelAtPeriodEnd: false,
+  endsAt: null,
+  hasCard: false,
   profiles: [{ id: 'p1', name: 'Me', color: '#f4456b' }],
   currentProfileId: 'p1',
 };
@@ -86,6 +97,8 @@ export interface ChangePreview {
   direction: string;
   dueNowMinor: string;
   creditMinor: string;
+  // Set when the change is deferred to period end (e.g. a downgrade) — current plan stays until then.
+  scheduledFor?: string | null;
 }
 
 interface BillingCtx extends BillingState {
@@ -105,13 +118,18 @@ interface BillingCtx extends BillingState {
   previewChange: (tier: Tier, interval: Interval) => Promise<ChangePreview | null>;
   // 'redirect' = navigating to Nomba checkout (no card → pay for the upgrade); 'done' = applied in place.
   changePlan: (tier: Tier, interval: Interval) => Promise<'redirect' | 'done'>;
+  // Cancel a pending period-end change (e.g. keep the current plan instead of the scheduled downgrade).
+  cancelScheduledChange: () => Promise<void>;
   convertTrial: () => void;
   changeTier: (tier: Tier) => void;
   simulateRenewal: () => void;
   simulateFailure: () => void;
   escalate: () => void;
   recover: () => void;
-  cancel: () => void;
+  // "Update payment" for a dunning sub. Live: opens a Nomba checkout (returns 'redirect'). Mock: recovers in place.
+  updatePayment: () => Promise<'redirect' | 'done'>;
+  cancel: () => Promise<void>;
+  reactivate: () => Promise<void>;
   reset: () => void;
   addProfile: (name: string) => boolean; // false if over screen limit
   removeProfile: (id: string) => void;
@@ -150,6 +168,10 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
         status: mapPlinthState(sub?.state),
         nextBillAt: sub?.next_bill_at ?? null,
         trialEndsAt: sub?.trial_end_at ?? null,
+        scheduledChange: sub?.scheduled_change ?? null,
+        cancelAtPeriodEnd: sub?.cancel_at_period_end ?? false,
+        endsAt: sub?.ends_at ?? null,
+        hasCard: sub?.has_card ?? false,
       }));
     } catch {}
   }
@@ -206,6 +228,11 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
       if (LIVE) {
         const d = await postJSON('/api/plinth/subscribe', { tier, interval, rail });
         if (d?.error) throw new Error(d.error);
+        if (d?.payByTransfer) {
+          // Transfer rail → show the dedicated virtual account to pay into.
+          window.location.href = '/pay-transfer';
+          return 'redirect';
+        }
         if (d?.checkoutLink) {
           // Pay-to-unlock → go to Nomba checkout. Caller keeps the spinner until we navigate.
           window.location.href = d.checkoutLink;
@@ -261,6 +288,15 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
       return 'done';
     },
 
+    cancelScheduledChange: async () => {
+      if (LIVE) {
+        await postJSON('/api/plinth/cancel-change', {});
+        await hydrateLive();
+        return;
+      }
+      setS((p) => ({ ...p, scheduledChange: null }));
+    },
+
     convertTrial: () =>
       setS((p) => (p.status === 'trialing' ? { ...p, status: 'active', trialEndsAt: null, nextBillAt: addDays(periodDays(p.interval)) } : p)),
 
@@ -278,7 +314,42 @@ export function BillingProvider({ children }: { children: React.ReactNode }) {
     simulateFailure: () => setS((p) => (p.status === 'active' || p.status === 'trialing' ? { ...p, status: 'past_due' } : p)),
     escalate: () => setS((p) => (p.status === 'past_due' ? { ...p, status: 'on_hold' } : p)),
     recover: () => setS((p) => ({ ...p, status: 'active', nextBillAt: addDays(periodDays(p.interval)) })),
-    cancel: () => setS((p) => ({ ...p, status: 'canceled' })),
+
+    updatePayment: async () => {
+      if (LIVE) {
+        const d = await postJSON('/api/plinth/recover', {});
+        if (d?.checkoutLink) {
+          // Recovery keeps the sub in a dunning state until payment settles; wait for it to flip to
+          // 'active' on the confirm page (past_due otherwise reads as "has access" and would exit early).
+          try { localStorage.setItem('plinth_pending_recovery', '1'); } catch {}
+          window.location.href = d.checkoutLink;
+          return 'redirect';
+        }
+        await hydrateLive();
+        return 'done';
+      }
+      setS((p) => ({ ...p, status: 'active', nextBillAt: addDays(periodDays(p.interval)) }));
+      return 'done';
+    },
+
+    cancel: async () => {
+      if (LIVE) {
+        // Engine honors cancel_policy: end_of_period keeps access until endsAt (state stays active).
+        await postJSON('/api/plinth/cancel-subscription', {});
+        await hydrateLive();
+        return;
+      }
+      setS((p) => ({ ...p, status: 'canceled' }));
+    },
+
+    reactivate: async () => {
+      if (LIVE) {
+        await postJSON('/api/plinth/reactivate', {});
+        await hydrateLive();
+        return;
+      }
+      setS((p) => ({ ...p, status: 'active', cancelAtPeriodEnd: false, endsAt: null }));
+    },
     // Reset billing but stay signed in as the current viewer (for repeat demos).
     reset: () =>
       setS((p) => ({
