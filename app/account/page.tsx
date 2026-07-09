@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   CreditCard, Landmark, Users, RefreshCw, ArrowUpRight, AlertTriangle, Clock,
   Check, XCircle, Receipt, ChevronRight,
@@ -10,9 +10,25 @@ import { planFor } from '@/lib/plans';
 import { naira, shortDate } from '@/lib/format';
 import { Brand } from '@/components/Brand';
 
+interface Invoice {
+  id: string; state: string; amount_due: string; amount_paid: string;
+  due_at: string | null; closed_at: string | null; created_at: string;
+}
+
 export default function AccountPage() {
   const b = useBilling();
   const [recovering, setRecovering] = useState(false);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+
+  // Real invoices from Plinth — their dates are in simulated (engine) time, so the history is accurate.
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/plinth/invoices', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => { if (alive && Array.isArray(d?.data)) setInvoices(d.data); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [b.status, b.tier]);
   const [keeping, setKeeping] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [resuming, setResuming] = useState(false);
@@ -29,6 +45,7 @@ export default function AccountPage() {
   // A scheduled downgrade: the current (higher) plan stays until effectiveAt, then switches.
   const sched = b.scheduledChange;
   const schedPlan = sched?.tier && !cancelingAtPeriodEnd ? planFor(sched.tier) : null;
+  const billing = billingRows(b, invoices);
 
   async function updatePayment() {
     setRecovering(true);
@@ -146,15 +163,24 @@ export default function AccountPage() {
             </div>
           )}
 
-          {/* primary CTA */}
+          {/* primary CTA — on dunning, offer BOTH rails (card failed? pay by transfer to recover) */}
           {needsAttention ? (
-            <button
-              onClick={updatePayment}
-              disabled={recovering}
-              className="tap mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-gold py-3 text-sm font-bold text-black shadow-glow disabled:opacity-70"
-            >
-              {recovering ? <><RefreshCw size={15} className="animate-spin" /> Updating…</> : <><CreditCard size={15} /> Update payment</>}
-            </button>
+            <div className="mt-3 space-y-2">
+              <p className="px-0.5 text-[11px] text-dim">Update your payment — pay by card, or by bank transfer.</p>
+              <button
+                onClick={updatePayment}
+                disabled={recovering}
+                className="tap flex w-full items-center justify-center gap-2 rounded-xl bg-gold py-3 text-sm font-bold text-black shadow-glow disabled:opacity-70"
+              >
+                {recovering ? <><RefreshCw size={15} className="animate-spin" /> Updating…</> : <><CreditCard size={15} /> Pay by card</>}
+              </button>
+              <button
+                onClick={() => { window.location.href = '/pay-transfer'; }}
+                className="tap flex w-full items-center justify-center gap-2 rounded-xl bg-surface2 py-3 text-sm font-bold text-ink ring-1 ring-line"
+              >
+                <Landmark size={15} /> Pay by bank transfer
+              </button>
+            </div>
           ) : b.effectiveTier === 'free' ? (
             <Link
               href="/pricing"
@@ -212,7 +238,7 @@ export default function AccountPage() {
         <div>
           <h2 className="mb-2 px-1 font-display text-sm font-bold text-dim">Billing history</h2>
           <div className="overflow-hidden rounded-2xl border border-line bg-surface">
-            {history(b).map((h, i) => (
+            {billing.map((h, i) => (
               <div key={i} className="flex items-center gap-3 border-b border-line/60 px-4 py-3 last:border-0">
                 <span className={`flex h-7 w-7 items-center justify-center rounded-full ${h.tone}`}>{h.icon}</span>
                 <div className="flex-1">
@@ -222,7 +248,7 @@ export default function AccountPage() {
                 <span className="text-xs font-semibold text-ink">{h.amount}</span>
               </div>
             ))}
-            {history(b).length === 0 && <p className="px-4 py-5 text-center text-xs text-dim">No charges yet.</p>}
+            {billing.length === 0 && <p className="px-4 py-5 text-center text-xs text-dim">No charges yet.</p>}
           </div>
         </div>
 
@@ -286,6 +312,29 @@ function DetailRow({ icon, label, value, href }: { icon: React.ReactNode; label:
   ) : (
     <div className="border-b border-line/60 last:border-0">{inner}</div>
   );
+}
+
+// Prefer REAL Plinth invoices (dates in simulated/engine time). Falls back to the derived rows in
+// mock mode / before invoices load.
+function billingRows(b: ReturnType<typeof useBilling>, invoices: Invoice[]) {
+  if (invoices.length === 0) return history(b);
+  const planName = planFor(b.tier).name;
+  const dunning = b.status === 'past_due' || b.status === 'on_hold';
+  const rowDate = (i: Invoice) => (i.state === 'paid' ? (i.closed_at ?? i.created_at) : (i.due_at ?? i.created_at));
+  return invoices
+    .filter((i) => i.state !== 'void')
+    .sort((a, z) => new Date(rowDate(z)).getTime() - new Date(rowDate(a)).getTime())
+    .map((i) => {
+      const amount = naira(Number(i.state === 'paid' ? i.amount_paid : i.amount_due));
+      const date = shortDate(rowDate(i));
+      if (i.state === 'paid') {
+        return { label: `${planName} subscription`, date, amount, icon: <Check size={14} className="text-emerald-400" />, tone: 'bg-emerald-500/15' };
+      }
+      if (i.state === 'uncollectible' || (i.state === 'open' && dunning)) {
+        return { label: `${planName} renewal — failed`, date, amount, icon: <XCircle size={14} className="text-rose" />, tone: 'bg-rose/15' };
+      }
+      return { label: `${planName} renewal — due`, date, amount, icon: <Clock size={14} className="text-gold" />, tone: 'bg-gold/15' };
+    });
 }
 
 function history(b: ReturnType<typeof useBilling>) {
