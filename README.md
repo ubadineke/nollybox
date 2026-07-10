@@ -1,6 +1,6 @@
 # Nollybox
 
-[![Watch the demo](https://img.youtube.com/vi/u3Z_KNJPMBg/maxresdefault.jpg)](https://youtu.be/u3Z_KNJPMBg)
+[![Watch the demo](https://img.youtube.com/vi/30QIrW4ATC0/maxresdefault.jpg)](https://youtu.be/30QIrW4ATC0)
 
 Nollybox is a fictional Nollywood streaming service built as a demo consumer for **[Plinth](https://github.com/ubadineke/plinth)** — subscription billing infrastructure on top of Nomba's payment rails.
 
